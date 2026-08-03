@@ -1,0 +1,121 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String    @id @default(cuid())
+  name           String
+  email          String    @unique
+  passwordHash   String
+  createdAt      DateTime  @default(now())
+  // Display preference only — every distance/pace/elevation is still stored
+  // in km/meters internally (see lib/units.ts). "km" or "mi".
+  unitPreference String    @default("km")
+  dateOfBirth    DateTime?
+  // "male", "female", "other", "prefer_not_to_say" — optional, never required.
+  sex            String?
+  // Strava OAuth connection (lib/stravaSync.ts). Null/unset means not
+  // connected — the CSV importer remains available either way. Tokens are
+  // stored as plain strings; acceptable for this app's scope (a small
+  // self-hosted personal/friends deployment with a single trusted database),
+  // same tradeoff already made implicitly for other stored data here.
+  stravaAthleteId      String?
+  stravaAccessToken    String?
+  stravaRefreshToken   String?
+  stravaTokenExpiresAt DateTime?
+  // When the last successful sync completed — used both to show "last
+  // synced" in the UI and to throttle auto-sync-on-page-load so normal
+  // browsing doesn't repeatedly hit Strava's API rate limit.
+  stravaLastSyncAt     DateTime?
+  plans          Plan[]
+  runs           RunLog[]
+}
+
+model Plan {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name             String
+  raceDistance     String   // 5k, 10k, half, marathon
+  raceDate         DateTime
+  startDate        DateTime
+  daysPerWeek      Int
+  experienceLevel  String   // beginner, intermediate, advanced
+  startingWeeklyKm Float
+  // Projected race pace (min/km) used to generate this plan's pace zones, if
+  // any history was available at creation time. Stored so the adaptive
+  // engine (lib/adaptivePlan.ts) can tell when your real current pace has
+  // moved on from what the plan was originally built around.
+  estimatedRacePaceMinPerKm Float?
+  createdAt        DateTime @default(now())
+  weeks            PlanWeek[]
+  runs             RunLog[]
+}
+
+model PlanWeek {
+  id         String   @id @default(cuid())
+  planId     String
+  plan       Plan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  weekNumber Int
+  phase      String   // Base, Build, Peak, Taper, Race
+  startDate  DateTime
+  targetKm   Float
+  workouts   PlanWorkout[]
+}
+
+model PlanWorkout {
+  id           String    @id @default(cuid())
+  weekId       String
+  week         PlanWeek  @relation(fields: [weekId], references: [id], onDelete: Cascade)
+  date         DateTime
+  type         String    // Easy, Long, Tempo, Intervals, Rest, CrossTrain, Race
+  title        String
+  description  String
+  targetKm     Float
+  completed    Boolean   @default(false)
+  // Set true the moment a user hand-edits this workout's date/type/title/
+  // description/target via the plan screen. Once true, the adaptive engine
+  // (lib/adaptivePlan.ts) treats this workout like a past one — it never
+  // recomputes or overwrites it — so a manual override always sticks,
+  // instead of being silently replaced next time paces/volume refresh.
+  manuallyEdited Boolean @default(false)
+  // The day this workout was first generated onto, captured lazily the
+  // first time it's dragged to a different day on the Manage Plan screen
+  // (see app/api/workouts/swap/route.ts) — left null until then. Lets a
+  // week's "Reset" button restore every workout to its originally-generated
+  // day, no matter how many times it's since been moved around.
+  originalDate DateTime?
+  run          RunLog?
+}
+
+model RunLog {
+  id           String       @id @default(cuid())
+  userId       String
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId       String?
+  plan         Plan?        @relation(fields: [planId], references: [id], onDelete: SetNull)
+  workoutId    String?      @unique
+  workout      PlanWorkout? @relation(fields: [workoutId], references: [id], onDelete: SetNull)
+  date         DateTime
+  distanceKm   Float
+  durationMin  Float
+  perceivedEffort Int?      // 1-10
+  notes        String?
+  title        String?      // activity title/name, from import sources (Strava/Garmin) or a manual label
+  elevationGainM Float?     // total ascent in meters, from import sources
+  calories     Int?         // from import sources
+  // Encoded Google-format polyline of the GPS route, only ever populated for
+  // Strava-synced runs (lib/stravaSync.ts) — CSV exports and manual logging
+  // have no route data to offer. Null means "no map available", not an error.
+  routePolyline String?
+  source       String       @default("manual") // "manual", "strava_import", "strava_sync", or "garmin_import"
+  externalId   String?      // Strava Activity ID, used to avoid re-importing the same activity twice
+  createdAt    DateTime     @default(now())
+
+  @@unique([userId, externalId])
+}
